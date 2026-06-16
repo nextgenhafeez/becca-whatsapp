@@ -59,7 +59,8 @@ PENDING = {}
 PENDING_TTL = 1800  # 30 minutes
 
 # Daily outbound counter + last error, for quota warnings and the /status page.
-STATE = {"date": None, "sent": 0, "last_error": None, "last_error_ts": None}
+STATE = {"date": None, "sent": 0, "last_error": None, "last_error_ts": None,
+         "twilio_capped": False}
 
 CONFIRM_TEXT = (
     "📎 I got your file(s)! Before I build anything, what should I make?\n\n"
@@ -84,6 +85,7 @@ def _roll():
     if STATE["date"] != _today():
         STATE["date"] = _today()
         STATE["sent"] = 0
+        STATE["twilio_capped"] = False  # the daily cap resets too
 
 
 def _remaining():
@@ -134,7 +136,9 @@ def _send(to_number, body, media_url=None):
         STATE["last_error_ts"] = _today()
         # 63038 = daily message limit exceeded on the trial account.
         if e.code == 63038:
-            log.error("TWILIO DAILY LIMIT HIT — cannot message %s. Resets in ~24h.", to_number)
+            STATE["twilio_capped"] = True
+            STATE["sent"] = DAILY_LIMIT  # so /status honestly shows 0 left
+            log.error("TWILIO DAILY LIMIT HIT — cannot message %s. Resets at midnight UTC.", to_number)
         else:
             log.error("TWILIO send error to %s: %s", to_number, e)
         return False
@@ -186,6 +190,7 @@ def status():
         "messages_sent_today": STATE["sent"],
         "daily_limit": DAILY_LIMIT,
         "messages_left_today": _remaining(),
+        "twilio_daily_cap_reached_today": STATE["twilio_capped"],
         "public_base_url": PUBLIC_BASE_URL,
         "last_error": STATE["last_error"],
         "last_error_day": STATE["last_error_ts"],
