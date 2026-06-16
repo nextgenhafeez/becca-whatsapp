@@ -1,0 +1,25 @@
+# Render Blueprint — deploys Becca as a free always-on web service.
+# Secrets (sync:false) are entered in the Render dashboard, never in this repo.
+services:
+  - type: web
+    name: becca
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /status
+    envVars:
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: TWILIO_WHATSAPP_FROM
+        value: whatsapp:+14155238886
+      - key: CLAUDE_MODEL
+        value: claude-opus-4-8
+      - key: STUDENT_NAME
+        value: Rebecca
+      - key: STUDENT_ID
+        value: "000000000"

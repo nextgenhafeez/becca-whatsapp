@@ -1,0 +1,19 @@
+name: keep-warm
+# Free hosting sleeps after ~15 min idle, which makes the first WhatsApp
+# message time out. This pings /status every 10 min to keep Becca awake.
+# It does nothing until the BECCA_URL repo secret is set to the Render URL.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Becca
+        run: |
+          if [ -n "${{ secrets.BECCA_URL }}" ]; then
+            curl -s -m 30 "${{ secrets.BECCA_URL }}/status" || true
+          else
+            echo "BECCA_URL secret not set yet; skipping."
+          fi
