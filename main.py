@@ -1,14 +1,17 @@
-"""PlayDoc / Becca — WhatsApp server.
+"""Becca — smart conversational WhatsApp helper for an ECE student.
 
-When a user sends files, Becca CONFIRMS what to make before building.
-This version also has:
-  - real logging (file + console) of every message in and out
-  - a daily outbound counter (Twilio free trial = 50 messages/day) with a
-    pre-emptive low-quota warning, so Rebecca is told BEFORE it goes silent
-  - clear auto-replies when the Claude/AI step fails (credit, rate limit, key)
-  - a /status page so we can see health, today's count, and the last error
+Every message goes to Becca's brain (Claude). She understands plain English,
+reads uploaded files (photos, PDFs, Word docs), follows their instructions,
+asks questions, chats, and writes finished documents in Rebecca's simple voice.
+
+Reliability features:
+  - logging of every message in/out
+  - a daily outbound counter (Twilio free trial = 50/day) + low-quota warning
+  - clear replies when Claude fails (credit, rate limit, key)
+  - a friendly /status + home dashboard so you always know what's going on
 """
 import os
+import io
 import time
 import uuid
 import logging
@@ -20,9 +23,10 @@ from fastapi.responses import Response, FileResponse, JSONResponse, HTMLResponse
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
 from twilio.twiml.messaging_response import MessagingResponse
+from docx import Document as DocxReader
 
-from sheet_specs import SHEETS, SUBTITLE, HELP_TEXT, route, sections_for
-from claude_client import generate, IMAGE_TYPES
+import becca_brain
+from sheet_specs import SUBTITLE
 from docx_builder import build_docx
 
 load_dotenv()
@@ -39,14 +43,14 @@ log = logging.getLogger("becca")
 ACCOUNT_SID = os.environ["TWILIO_ACCOUNT_SID"]
 AUTH_TOKEN = os.environ["TWILIO_AUTH_TOKEN"]
 WHATSAPP_FROM = os.environ["TWILIO_WHATSAPP_FROM"]
-# On Render this is auto-set (RENDER_EXTERNAL_URL); locally we use the tunnel URL.
 PUBLIC_BASE_URL = (os.environ.get("PUBLIC_BASE_URL")
                    or os.environ.get("RENDER_EXTERNAL_URL", "")).rstrip("/")
 
-# Twilio free trial allows 50 outbound WhatsApp messages per day (sandbox).
 DAILY_LIMIT = int(os.environ.get("TWILIO_DAILY_LIMIT", "50"))
 
-READABLE = IMAGE_TYPES | {"application/pdf"}
+IMAGE_TYPES = becca_brain.IMAGE_TYPES
+PDF_TYPE = "application/pdf"
+DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 twilio_client = Client(ACCOUNT_SID, AUTH_TOKEN)
 app = FastAPI(title="Becca")
@@ -54,25 +58,14 @@ app = FastAPI(title="Becca")
 FILES_DIR = os.path.join(os.path.dirname(__file__), "generated")
 os.makedirs(FILES_DIR, exist_ok=True)
 
-# Simple in-memory "what should I do with these files?" state, per phone number.
-PENDING = {}
-PENDING_TTL = 1800  # 30 minutes
+# Per-user conversation memory (text turns) so Becca remembers the chat.
+HISTORY = {}
+HISTORY_TS = {}
+HISTORY_TTL = 3 * 3600       # forget after 3 hours idle
+HISTORY_MAX = 8              # keep last 8 turns (4 exchanges)
 
-# Daily outbound counter + last error, for quota warnings and the /status page.
 STATE = {"date": None, "sent": 0, "last_error": None, "last_error_ts": None,
          "twilio_capped": False}
-
-CONFIRM_TEXT = (
-    "📎 I got your file(s)! Before I build anything, what should I make?\n\n"
-    "Reply with one word:\n"
-    "• *aor* — observation sheet (uses a photo)\n"
-    "• *plan* — planning sheet\n"
-    "• *ppp* — provocation + observation\n"
-    "• *board* — documentation board\n"
-    "• *essay1* / *essay2* / *essay3*\n\n"
-    "📸 Sent several photos and want a *separate* observation for each? Reply *each*.\n"
-    "ℹ️ Each file is treated individually, one file makes one sheet."
-)
 
 
 # ---------------------------------------------------------------- quota helpers
@@ -81,11 +74,10 @@ def _today():
 
 
 def _roll():
-    """Reset the counter when the day changes."""
     if STATE["date"] != _today():
         STATE["date"] = _today()
         STATE["sent"] = 0
-        STATE["twilio_capped"] = False  # the daily cap resets too
+        STATE["twilio_capped"] = False
 
 
 def _remaining():
@@ -99,32 +91,21 @@ def _count_sent(n=1):
 
 
 def _quota_note():
-    """A short warning to append when the free-trial quota is running low."""
     left = _remaining()
     if left <= 0:
-        return ("\n\n⚠️ *Heads up:* the free trial's daily message limit is used up. "
-                "I may not be able to reply again until it resets (about 24 hours). "
-                "Your finished files are still saved.")
+        return ("\n\n⚠️ The free trial's daily message limit is used up. I may not be "
+                "able to reply again until it resets (about 24 hours).")
     if left <= 6:
-        return (f"\n\n⚠️ *Note:* only about {left} free messages left today "
-                "(free trial limit). It resets in about 24 hours.")
+        return f"\n\n⚠️ Note: only about {left} free messages left today (resets in ~24h)."
     return ""
 
 
-def _reply(reply, text, with_quota=True):
-    """Add a TwiML message (this counts against Twilio's daily cap)."""
+def _send(to_number, body, media_url=None, with_quota=True):
+    """Send a WhatsApp message via Twilio REST. Logs + counts + handles the cap."""
     if with_quota:
-        text = text + _quota_note()
-    reply.message(text)
-    _count_sent(1)
-    return reply
-
-
-def _send(to_number, body, media_url=None):
-    """Send via Twilio REST (the finished file or an error). Logs + counts.
-    If Twilio refuses (e.g. daily cap), we log it; we cannot reach her then."""
+        body = (body or "")[:1400] + _quota_note()
     try:
-        kwargs = {"from_": WHATSAPP_FROM, "to": to_number, "body": body}
+        kwargs = {"from_": WHATSAPP_FROM, "to": to_number, "body": body[:1590]}
         if media_url:
             kwargs["media_url"] = media_url
         msg = twilio_client.messages.create(**kwargs)
@@ -134,10 +115,9 @@ def _send(to_number, body, media_url=None):
     except TwilioRestException as e:
         STATE["last_error"] = f"Twilio send failed ({e.code}): {e.msg}"
         STATE["last_error_ts"] = _today()
-        # 63038 = daily message limit exceeded on the trial account.
         if e.code == 63038:
             STATE["twilio_capped"] = True
-            STATE["sent"] = DAILY_LIMIT  # so /status honestly shows 0 left
+            STATE["sent"] = DAILY_LIMIT
             log.error("TWILIO DAILY LIMIT HIT — cannot message %s. Resets at midnight UTC.", to_number)
         else:
             log.error("TWILIO send error to %s: %s", to_number, e)
@@ -149,35 +129,54 @@ def _send(to_number, body, media_url=None):
         return False
 
 
-def _xml(reply):
-    return Response(content=str(reply), media_type="application/xml")
-
-
 def _explain_ai_error(e):
-    """Turn a Claude/AI exception into a clear WhatsApp message for Rebecca."""
     name = type(e).__name__
     text = str(e).lower()
     status = getattr(e, "status_code", None)
     if "credit" in text or "billing" in text or "insufficient" in text:
-        return ("⚠️ The AI credit (Anthropic/Claude) has run out, so I can't write right now. "
-                "Once the Claude account is topped up, send your photo + note again. "
-                "Nothing you sent was lost.")
+        return ("⚠️ The AI credit (Claude) has run out, so I can't write right now. Once it's "
+                "topped up, send your message again. Nothing you sent was lost.")
     if name == "RateLimitError" or status == 429:
-        return ("⏳ The AI is busy at the moment (rate limit). Please wait about a minute "
-                "and send it again.")
+        return "⏳ The AI is busy right now. Please wait about a minute and send it again."
     if name == "AuthenticationError" or status in (401, 403):
-        return ("⚠️ There's a problem with the AI key on my side. I've logged it. "
-                "Please try again a bit later.")
+        return "⚠️ There's a problem with my AI key. I've logged it. Please try again later."
     if name in ("APIConnectionError", "APITimeoutError"):
-        return ("🌐 I couldn't reach the AI just now (connection issue). Please send it again "
-                "in a minute.")
-    return None  # fall back to the generic message
+        return "🌐 I couldn't reach the AI just now. Please send it again in a minute."
+    return None
+
+
+# ---------------------------------------------------------------- file reading
+def _extract_docx(data_bytes):
+    try:
+        d = DocxReader(io.BytesIO(data_bytes))
+        parts = [p.text for p in d.paragraphs if p.text.strip()]
+        for t in d.tables:
+            for row in t.rows:
+                cells = [c.text.strip() for c in row.cells if c.text.strip()]
+                if cells:
+                    parts.append(" | ".join(cells))
+        return "\n".join(parts)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _history(from_number):
+    if from_number in HISTORY_TS and time.time() - HISTORY_TS[from_number] > HISTORY_TTL:
+        HISTORY.pop(from_number, None)
+    return HISTORY.get(from_number, [])
+
+
+def _remember(from_number, user_summary, assistant_summary):
+    h = HISTORY.get(from_number, [])
+    h.append({"role": "user", "content": user_summary[:4000] or "(file only)"})
+    h.append({"role": "assistant", "content": assistant_summary[:4000] or "Done."})
+    HISTORY[from_number] = h[-HISTORY_MAX:]
+    HISTORY_TS[from_number] = time.time()
 
 
 # ---------------------------------------------------------------- routes
 @app.get("/", response_class=HTMLResponse)
 def home():
-    """A friendly, human-readable health page you can bookmark."""
     _roll()
     left = _remaining()
     if STATE["twilio_capped"]:
@@ -189,22 +188,19 @@ def home():
             f"Becca is running, but only about {left} free messages are left today."
     else:
         big, color, line = "✅ Becca is running", "#2B8A3E", \
-            "Everything is working. Send a photo + a note on WhatsApp."
+            "Everything is working. Send a message or a photo on WhatsApp."
     err = STATE["last_error"]
     err_html = (f"<p class='err'><b>Last problem logged:</b><br>{err}<br>"
-                f"<small>(on {STATE['last_error_day']})</small></p>") if err else \
+                f"<small>(on {STATE['last_error_ts']})</small></p>") if err else \
                "<p class='ok'>No problems logged. 🎉</p>"
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="15"><title>Becca status</title>
 <style>
- body{{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#FFF4F9;
- margin:0;padding:24px;color:#3A2A38}}
- .card{{max-width:520px;margin:24px auto;background:#fff;border-radius:18px;
- padding:28px;box-shadow:0 8px 30px rgba(214,51,108,.12)}}
+ body{{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#FFF4F9;margin:0;padding:24px;color:#3A2A38}}
+ .card{{max-width:520px;margin:24px auto;background:#fff;border-radius:18px;padding:28px;box-shadow:0 8px 30px rgba(214,51,108,.12)}}
  h1{{font-size:26px;margin:.2em 0;color:{color}}}
- .pill{{display:inline-block;background:#FFE3EE;color:#D6336C;border-radius:999px;
- padding:4px 12px;font-size:13px;font-weight:600}}
+ .pill{{display:inline-block;background:#FFE3EE;color:#D6336C;border-radius:999px;padding:4px 12px;font-size:13px;font-weight:600}}
  .row{{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid #f3e6ee}}
  .err{{background:#FFF0E6;border-radius:12px;padding:12px;color:#A0410C}}
  .ok{{background:#E6F7EA;border-radius:12px;padding:12px;color:#2B6E3C}}
@@ -224,7 +220,6 @@ def home():
 
 @app.get("/status")
 def status():
-    """Quick health/quota view for us (not for Rebecca)."""
     _roll()
     return JSONResponse({
         "status": "Becca running",
@@ -249,106 +244,79 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
         (form.get(f"MediaUrl{i}"), (form.get(f"MediaContentType{i}") or "").split(";")[0].lower())
         for i in range(num_media)
     ]
-    has_readable = any(m in READABLE for _, m in media_list)
-    has_video = any(m.startswith("video/") for _, m in media_list)
-
     log.info("IN  from=%s media=%d body=%r left_today=%d",
              from_number, num_media, note[:80], _remaining())
 
-    sheet_key, context = route(note)
-    reply = MessagingResponse()
-
-    if sheet_key == "help":
-        return _xml(_reply(reply, HELP_TEXT))
-
-    # --- Files attached ---
-    if has_readable:
-        if sheet_key:  # explicit command WITH the files -> go ahead
-            PENDING.pop(from_number, None)
-            return _start(reply, from_number, sheet_key, context, media_list, background_tasks)
-        # files but no command -> CONFIRM first
-        PENDING[from_number] = {"media": media_list, "note": note, "ts": time.time()}
-        return _xml(_reply(reply, CONFIRM_TEXT))
-
-    if has_video:
-        return _xml(_reply(reply, "🎬 I can read *photos* and *PDFs*, but not video files yet. "
-                                  "Please send a photo + a note."))
-
-    # --- No files. Is this an answer to a pending 'what should I make?' ---
-    pend = PENDING.get(from_number)
-    if pend and (time.time() - pend["ts"] < PENDING_TTL):
-        low = note.lower().strip()
-        if low.split()[0:1] == ["each"]:
-            PENDING.pop(from_number, None)
-            return _start_each(reply, from_number, pend["media"], background_tasks)
-        if sheet_key:  # they chose a sheet type -> use the stored files
-            PENDING.pop(from_number, None)
-            ctx = context or pend.get("note", "")
-            return _start(reply, from_number, sheet_key, ctx, pend["media"], background_tasks)
-        return _xml(_reply(reply, "Please reply with one of: *aor*, *plan*, *ppp*, *board*, "
-                                  "*essay1/2/3*, or *each*."))
-
-    # --- No files, no pending: normal routing ---
-    if sheet_key is None:
-        return _xml(_reply(reply, HELP_TEXT))
-    return _start(reply, from_number, sheet_key, context, [], background_tasks)
+    # Answer Twilio instantly (no message), then think + reply in the background.
+    background_tasks.add_task(process_message, from_number, note, media_list)
+    return Response(content=str(MessagingResponse()), media_type="application/xml")
 
 
-def _start(reply, to, sheet_key, context, media_list, bg):
-    spec = SHEETS[sheet_key]
-    if spec["needs_photo"] and not any(m in READABLE for _, m in media_list):
-        return _xml(_reply(reply, f"📸 The *{spec['title']}* needs a photo. "
-                                  "Please send a photo with your note."))
-    _reply(reply, f"✨ Got it! Writing your *{spec['title']}*… about a minute. 📝")
-    bg.add_task(process, to, sheet_key, context, media_list)
-    return _xml(reply)
-
-
-def _start_each(reply, to, media_list, bg):
-    photos = [(u, m) for u, m in media_list if m in IMAGE_TYPES]
-    if not photos:
-        return _xml(_reply(reply, "I didn't find any photos to make separate observations from. "
-                                  "Send photos and reply *each*."))
-    _reply(reply, f"✨ Making {len(photos)} observation sheet(s), one per photo… 📝")
-    for u, m in photos:
-        bg.add_task(process, to, "aor", "", [(u, m)])
-    return _xml(reply)
-
-
-def process(to_number: str, sheet_key: str, context: str, media_list):
-    spec = SHEETS[sheet_key]
+def process_message(from_number, user_text, media_list):
     try:
-        media_items = []
+        attachments = []
+        file_notes = []
+        photo_bytes = None
         for url, mtype in media_list:
-            if mtype in READABLE:
+            try:
                 r = requests.get(url, auth=(ACCOUNT_SID, AUTH_TOKEN), timeout=45)
                 r.raise_for_status()
-                media_items.append((r.content, mtype))
+                blob = r.content
+            except Exception:  # noqa: BLE001
+                continue
+            if mtype in IMAGE_TYPES:
+                attachments.append({"kind": "image", "bytes": blob, "mtype": mtype})
+                if photo_bytes is None:
+                    photo_bytes = blob
+                file_notes.append("[a photo]")
+            elif mtype == PDF_TYPE:
+                attachments.append({"kind": "pdf", "bytes": blob})
+                file_notes.append("[a PDF file]")
+            elif mtype == DOCX_TYPE:
+                text = _extract_docx(blob)
+                attachments.append({"kind": "text", "name": "Word document", "text": text})
+                file_notes.append("[a Word document]")
+            elif mtype.startswith("text/"):
+                attachments.append({"kind": "text", "name": "text file",
+                                    "text": blob.decode("utf-8", "ignore")})
+                file_notes.append("[a text file]")
+            elif mtype.startswith("video/"):
+                file_notes.append("[a video, which I cannot read]")
 
-        log.info("BUILD %s for %s (%d file(s))", sheet_key, to_number, len(media_items))
-        data = generate(spec, context, media_items)
-        photo_bytes = next((b for b, t in media_items if t in IMAGE_TYPES), None)
+        history = _history(from_number)
+        data = becca_brain.respond(history, user_text, attachments)
+        reply = data.get("reply") or "Done."
 
-        filename = f"{sheet_key.upper()}_{uuid.uuid4().hex[:8]}.docx"
-        build_docx(spec["title"], SUBTITLE, sections_for(spec, data),
-                   os.path.join(FILES_DIR, filename), doc_type=spec.get("needs_photo", False),
-                   photo_bytes=photo_bytes)
+        made_doc = False
+        if data.get("make_document") and data.get("document"):
+            doc = data["document"]
+            sections = [(s["heading"], s["body"]) for s in doc["sections"]]
+            filename = f"BECCA_{uuid.uuid4().hex[:8]}.docx"
+            path = os.path.join(FILES_DIR, filename)
+            build_docx(doc["title"], doc.get("subtitle") or SUBTITLE, sections, path,
+                       doc_type=False, photo_bytes=photo_bytes)
+            file_url = f"{PUBLIC_BASE_URL}/files/{filename}"
+            log.info("DOC built '%s' for %s -> %s", doc["title"], from_number, filename)
+            ok = _send(from_number, reply, media_url=[file_url])
+            made_doc = ok
+            if not ok:
+                log.warning("Built %s but could not deliver to %s", filename, from_number)
+        else:
+            _send(from_number, reply)
 
-        file_url = f"{PUBLIC_BASE_URL}/files/{filename}"
-        ok = _send(to_number,
-                   f"✅ Here's your *{spec['title']}*. Review and edit before submitting. 💕",
-                   media_url=[file_url])
-        if not ok:
-            log.warning("Built %s but could NOT deliver to %s (saved at %s)",
-                        filename, to_number, file_url)
+        user_summary = (user_text + " " + " ".join(file_notes)).strip()
+        assistant_summary = reply
+        if made_doc:
+            head = "; ".join(s["heading"] for s in data["document"]["sections"][:6])
+            assistant_summary += f"\n[I wrote the document '{data['document']['title']}' with sections: {head}]"
+        _remember(from_number, user_summary, assistant_summary)
+
     except Exception as e:  # noqa: BLE001
         STATE["last_error"] = f"{type(e).__name__}: {e}"
         STATE["last_error_ts"] = _today()
-        log.exception("BUILD FAILED (%s) for %s", sheet_key, to_number)
-        msg = _explain_ai_error(e) or (
-            f"⚠️ Sorry, something went wrong while writing the {spec['title']}. "
-            "Please try again, or send a short note describing the play.")
-        _send(to_number, msg)
+        log.exception("PROCESS FAILED for %s", from_number)
+        _send(from_number, _explain_ai_error(e) or
+              "⚠️ Sorry, something went wrong on my side. Please try again in a moment.")
 
 
 @app.get("/files/{filename}")
