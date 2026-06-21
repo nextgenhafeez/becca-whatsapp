@@ -64,6 +64,7 @@ BEHAVIOUR = (
     "{\n"
     '  "reply": "<the short message to send her on WhatsApp>",\n'
     '  "make_document": true or false,\n'
+    '  "save_cover": {"cover_lines": ["..."], "student_id": "..."},\n'
     '  "document": {\n'
     '    "style": "plain or pretty",\n'
     '    "title": "<short title for the document>",\n'
@@ -93,6 +94,14 @@ BEHAVIOUR = (
     "line, date line. This appears on the FIRST PAGE only. Put just the id number in "
     "student_id. Only leave out a line if you truly cannot find it anywhere, and never "
     "invent an instructor name or a date.\n\n"
+
+    "REMEMBERING THE COVER: the user gives their cover/title-page details once and wants "
+    "them on EVERY document after that. Whenever the user sends cover details (course, "
+    "assignment, student name, student id, instructor, date) or asks you to save them, "
+    "put them in the top-level save_cover object (cover_lines + student_id). If they only "
+    "sent the details with no document request, set make_document to false and in reply "
+    "say you saved their cover info and will use it on every assignment. If save_cover is "
+    "not relevant, set it to null.\n\n"
 
     "WHAT YOU CAN FORMAT: you DO hand back a finished, ready document. The plain style "
     "is already Times New Roman, size 12, with plain black headings, no colours, and no "
@@ -152,6 +161,15 @@ def respond(history, user_text, attachments):
                 "make_document": False, "document": None}
 
     data["reply"] = _despace(str(data.get("reply", "")).strip()) or "Done."
+    sc = data.get("save_cover")
+    if isinstance(sc, dict):
+        lines = sc.get("cover_lines") or []
+        data["save_cover"] = {
+            "cover_lines": [_despace(str(x)) for x in lines] if isinstance(lines, list) else [],
+            "student_id": str(sc.get("student_id", "")).strip(),
+        }
+    else:
+        data["save_cover"] = None
     if data.get("make_document") and isinstance(data.get("document"), dict):
         doc = data["document"]
         doc["style"] = "pretty" if str(doc.get("style", "")).strip().lower() == "pretty" else "plain"

@@ -63,6 +63,8 @@ os.makedirs(FILES_DIR, exist_ok=True)
 # Per-user conversation memory (text turns) so Becca remembers the chat.
 HISTORY = {}
 HISTORY_TS = {}
+# Remembered cover/title-page info per user, reused on every document.
+COVER_STORE = {}
 HISTORY_TTL = 3 * 3600       # forget after 3 hours idle
 HISTORY_MAX = 8              # keep last 8 turns (4 exchanges)
 
@@ -319,6 +321,12 @@ def process_message(from_number, user_text, media_list):
         data = becca_brain.respond(history, user_text, attachments)
         reply = data.get("reply") or "Done."
 
+        # Remember cover info the user gives, so it lands on every document.
+        sc = data.get("save_cover")
+        if isinstance(sc, dict) and sc.get("cover_lines"):
+            COVER_STORE[from_number] = sc
+            log.info("saved cover for %s (%d lines)", from_number, len(sc["cover_lines"]))
+
         made_doc = False
         if data.get("make_document") and data.get("document"):
             doc = data["document"]
@@ -330,14 +338,23 @@ def process_message(from_number, user_text, media_list):
             else:
                 sections = [(s["heading"], s["body"]) for s in doc["sections"]]
                 title = doc["title"]
+            # Cover info: from this request, else the remembered one. Keep memory fresh.
+            stored = COVER_STORE.get(from_number) or {}
+            if doc.get("cover_lines"):
+                COVER_STORE[from_number] = {"cover_lines": doc["cover_lines"],
+                                            "student_id": doc.get("student_id", "")}
+                stored = COVER_STORE[from_number]
+            cover_lines = doc.get("cover_lines") or stored.get("cover_lines")
+            student_id = doc.get("student_id") or stored.get("student_id")
+
             filename = f"BECCA_{uuid.uuid4().hex[:8]}.docx"
             path = os.path.join(FILES_DIR, filename)
             build_docx(title, doc.get("subtitle") or "", sections, path,
                        doc_type=False, photo_bytes=photo_bytes,
                        decor=doc.get("decor") if pretty else None,
                        style="pretty" if pretty else "plain",
-                       cover_lines=doc.get("cover_lines") or None,
-                       student_id=doc.get("student_id") or None)
+                       cover_lines=cover_lines or None,
+                       student_id=student_id or None)
             file_url = f"{PUBLIC_BASE_URL}/files/{filename}"
             log.info("DOC built '%s' for %s -> %s", doc["title"], from_number, filename)
             ok = _send(from_number, reply, media_url=[file_url])
