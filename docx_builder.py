@@ -249,7 +249,9 @@ def build_docx(title, subtitle, sections, path, doc_type=False, photo_bytes=None
         _cover_page(doc, [ln for ln in cover_lines])
 
     # ---- body ----
-    if pretty:
+    # When there is a cover page, the title block goes ONLY on page 1 (the cover),
+    # so the content pages start straight at the first section (no repeated title).
+    if pretty and not cover_lines:
         if os.path.isfile(BANNER_PATH):
             bp = doc.add_paragraph()
             bp.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -283,18 +285,17 @@ def build_docx(title, subtitle, sections, path, doc_type=False, photo_bytes=None
             dr = dp.add_run(decor)
             dr.font.size = Pt(15)
         _divider(doc, color=theme["border"], size="12")
-    else:
-        # plain: a simple black title, no banner, no colour
-        if title:
-            tt = doc.add_paragraph()
-            tt.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            tt.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
-            tt.paragraph_format.space_after = Pt(6)
-            ttr = tt.add_run(title)
-            ttr.bold = True
-            ttr.font.name = "Times New Roman"
-            ttr.font.size = Pt(14)
-            ttr.font.color.rgb = BLACK
+    elif title and not cover_lines:
+        # plain: a simple black title, no banner, no colour (only when no cover page)
+        tt = doc.add_paragraph()
+        tt.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        tt.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+        tt.paragraph_format.space_after = Pt(6)
+        ttr = tt.add_run(title)
+        ttr.bold = True
+        ttr.font.name = "Times New Roman"
+        ttr.font.size = Pt(14)
+        ttr.font.color.rgb = BLACK
 
     for heading, body in sections:
         if heading:
