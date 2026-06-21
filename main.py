@@ -16,7 +16,7 @@ import datetime
 import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, BackgroundTasks
-from fastapi.responses import Response, FileResponse, JSONResponse
+from fastapi.responses import Response, FileResponse, JSONResponse, HTMLResponse
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
 from twilio.twiml.messaging_response import MessagingResponse
@@ -175,9 +175,51 @@ def _explain_ai_error(e):
 
 
 # ---------------------------------------------------------------- routes
-@app.get("/")
-def health():
-    return {"status": "Becca running"}
+@app.get("/", response_class=HTMLResponse)
+def home():
+    """A friendly, human-readable health page you can bookmark."""
+    _roll()
+    left = _remaining()
+    if STATE["twilio_capped"]:
+        big, color, line = "⚠️ Daily limit reached", "#E8590C", \
+            "WhatsApp's free daily message limit is used up. It resets at midnight UTC. " \
+            "Becca still receives messages, but can't reply until then."
+    elif left <= 6:
+        big, color, line = "🟡 Running low", "#F08C00", \
+            f"Becca is running, but only about {left} free messages are left today."
+    else:
+        big, color, line = "✅ Becca is running", "#2B8A3E", \
+            "Everything is working. Send a photo + a note on WhatsApp."
+    err = STATE["last_error"]
+    err_html = (f"<p class='err'><b>Last problem logged:</b><br>{err}<br>"
+                f"<small>(on {STATE['last_error_day']})</small></p>") if err else \
+               "<p class='ok'>No problems logged. 🎉</p>"
+    return f"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="15"><title>Becca status</title>
+<style>
+ body{{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#FFF4F9;
+ margin:0;padding:24px;color:#3A2A38}}
+ .card{{max-width:520px;margin:24px auto;background:#fff;border-radius:18px;
+ padding:28px;box-shadow:0 8px 30px rgba(214,51,108,.12)}}
+ h1{{font-size:26px;margin:.2em 0;color:{color}}}
+ .pill{{display:inline-block;background:#FFE3EE;color:#D6336C;border-radius:999px;
+ padding:4px 12px;font-size:13px;font-weight:600}}
+ .row{{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid #f3e6ee}}
+ .err{{background:#FFF0E6;border-radius:12px;padding:12px;color:#A0410C}}
+ .ok{{background:#E6F7EA;border-radius:12px;padding:12px;color:#2B6E3C}}
+ small{{color:#9b8a96}}
+</style></head><body>
+<div class="card">
+ <span class="pill">🍁 Becca</span>
+ <h1>{big}</h1>
+ <p>{line}</p>
+ <div class="row"><span>Messages sent today</span><b>{STATE['sent']}</b></div>
+ <div class="row"><span>Free messages left today</span><b>{left}</b></div>
+ <div class="row"><span>Daily limit hit?</span><b>{"yes" if STATE['twilio_capped'] else "no"}</b></div>
+ {err_html}
+ <p><small>Auto-refreshes every 15 seconds · {STATE['date']}</small></p>
+</div></body></html>"""
 
 
 @app.get("/status")
