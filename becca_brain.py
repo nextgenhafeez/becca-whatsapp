@@ -66,12 +66,18 @@ BEHAVIOUR = (
     '  "make_document": true or false,\n'
     '  "document": {\n'
     '    "title": "<short title for the document>",\n'
+    '    "title_emoji": "<one emoji that fits the topic, e.g. 🎀>",\n'
+    '    "decor": "<3 to 6 fun emojis that fit the topic, separated by spaces>",\n'
     '    "subtitle": "<short subtitle, or empty string>",\n'
     '    "sections": [\n'
-    '      {"heading": "<section heading>", "body": "<the written text; use \\n between paragraphs>"}\n'
+    '      {"emoji": "<one emoji for this section>", "heading": "<section heading>", "body": "<the written text; use \\n between paragraphs>"}\n'
     "    ]\n"
     "  }\n"
     "}\n\n"
+    "Pick cute, tasteful emojis that match the topic (for example dolls 🎀👗🧸, "
+    "blocks 🧱🏗️, painting 🎨🖌️, outdoor play 🌳☀️). They make the document look "
+    "fun. Keep them light, do not overdo it. These emoji fields are optional; if "
+    "nothing fits, leave them out.\n\n"
     "When you are only chatting or asking a question, set \"make_document\": false and "
     "set \"document\": null.\n"
     "When you write a document, set \"make_document\": true, put the FULL written content "
@@ -129,11 +135,14 @@ def respond(history, user_text, attachments):
         doc = data["document"]
         doc["title"] = _despace(str(doc.get("title", "Assignment")).strip()) or "Assignment"
         doc["subtitle"] = _despace(str(doc.get("subtitle", "")).strip())
+        doc["title_emoji"] = str(doc.get("title_emoji", "")).strip()
+        doc["decor"] = str(doc.get("decor", "")).strip()
         clean_sections = []
         for s in doc.get("sections", []) or []:
             if not isinstance(s, dict):
                 continue
             clean_sections.append({
+                "emoji": str(s.get("emoji", "")).strip(),
                 "heading": _despace(str(s.get("heading", "")).strip()),
                 "body": _despace(str(s.get("body", "")).strip()),
             })

@@ -43,8 +43,10 @@ log = logging.getLogger("becca")
 ACCOUNT_SID = os.environ["TWILIO_ACCOUNT_SID"]
 AUTH_TOKEN = os.environ["TWILIO_AUTH_TOKEN"]
 WHATSAPP_FROM = os.environ["TWILIO_WHATSAPP_FROM"]
+_space_host = os.environ.get("SPACE_HOST", "")
 PUBLIC_BASE_URL = (os.environ.get("PUBLIC_BASE_URL")
-                   or os.environ.get("RENDER_EXTERNAL_URL", "")).rstrip("/")
+                   or os.environ.get("RENDER_EXTERNAL_URL")
+                   or (("https://" + _space_host) if _space_host else "")).rstrip("/")
 
 DAILY_LIMIT = int(os.environ.get("TWILIO_DAILY_LIMIT", "50"))
 
@@ -290,11 +292,13 @@ def process_message(from_number, user_text, media_list):
         made_doc = False
         if data.get("make_document") and data.get("document"):
             doc = data["document"]
-            sections = [(s["heading"], s["body"]) for s in doc["sections"]]
+            sections = [(f"{s.get('emoji','')} {s['heading']}".strip(), s["body"])
+                        for s in doc["sections"]]
+            title = f"{doc.get('title_emoji','')} {doc['title']}".strip()
             filename = f"BECCA_{uuid.uuid4().hex[:8]}.docx"
             path = os.path.join(FILES_DIR, filename)
-            build_docx(doc["title"], doc.get("subtitle") or SUBTITLE, sections, path,
-                       doc_type=False, photo_bytes=photo_bytes)
+            build_docx(title, doc.get("subtitle") or SUBTITLE, sections, path,
+                       doc_type=False, photo_bytes=photo_bytes, decor=doc.get("decor"))
             file_url = f"{PUBLIC_BASE_URL}/files/{filename}"
             log.info("DOC built '%s' for %s -> %s", doc["title"], from_number, filename)
             ok = _send(from_number, reply, media_url=[file_url])

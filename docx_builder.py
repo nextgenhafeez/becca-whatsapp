@@ -31,22 +31,22 @@ THEMES = [
     {  # Blossom — the original pink + sky blue
         "name": "Blossom", "title": "D6336C", "heading": "1C7ED6",
         "border": "7FD4FF", "divider": "F2A9C4", "banner_fill": "FFE3EE",
-        "heading_style": "plain", "accent": "FBD6E4",
+        "heading_style": "plain", "accent": "FBD6E4", "page_bg": "FFF6FA",
     },
     {  # Meadow — soft green + blue, heading with a coloured side bar
         "name": "Meadow", "title": "2B8A3E", "heading": "1C7ED6",
         "border": "A9E3B5", "divider": "B2E2BE", "banner_fill": "E6F7EA",
-        "heading_style": "bar", "accent": "2B8A3E",
+        "heading_style": "bar", "accent": "2B8A3E", "page_bg": "F4FBF6",
     },
     {  # Lavender Sky — plum + blue, heading on a light shaded strip
         "name": "Lavender Sky", "title": "7048E8", "heading": "1C7ED6",
         "border": "C0B6F2", "divider": "D0C8F5", "banner_fill": "F0ECFB",
-        "heading_style": "shaded", "accent": "EEE9FB",
+        "heading_style": "shaded", "accent": "EEE9FB", "page_bg": "F7F4FD",
     },
     {  # Sunrise — coral + teal, heading with an underline
         "name": "Sunrise", "title": "E8590C", "heading": "1098AD",
         "border": "FFC9A0", "divider": "FFD8B0", "banner_fill": "FFF0E6",
-        "heading_style": "underline", "accent": "E8590C",
+        "heading_style": "underline", "accent": "E8590C", "page_bg": "FFF7F0",
     },
 ]
 
@@ -90,6 +90,19 @@ def _divider(doc, color="F2A9C4", size="10"):
     p.paragraph_format.space_after = Pt(8)
     _para_border(p, "bottom", color, size=size, space="1")
     return p
+
+
+def _page_background(doc, color):
+    """Fill the whole page with a soft colour (shows in Word and Pages)."""
+    bg = OxmlElement("w:background")
+    bg.set(qn("w:color"), color)
+    doc.element.insert(0, bg)  # must be the first child of <w:document>
+    try:
+        settings = doc.settings.element
+        if settings.find(qn("w:displayBackgroundShape")) is None:
+            settings.append(OxmlElement("w:displayBackgroundShape"))
+    except Exception:
+        pass
 
 
 def _page_border(doc, color="7FD4FF"):
@@ -136,18 +149,17 @@ def _banner(doc, title, subtitle, theme):
 
 
 def _heading(doc, text, theme):
-    """A section heading drawn in the theme's style."""
+    """A section heading drawn as a soft colour card, plus a per-theme accent."""
     h = doc.add_paragraph()
-    h.paragraph_format.space_before = Pt(6)
+    h.paragraph_format.space_before = Pt(8)
+    h.paragraph_format.space_after = Pt(2)
     h.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+    # every heading sits on a light band so it reads like a designed card
+    _para_shade(h, theme["banner_fill"])
+    h.paragraph_format.left_indent = Pt(6)
     style = theme["heading_style"]
     if style == "bar":
         _para_border(h, "left", theme["accent"], size="24", space="6")
-        h.paragraph_format.left_indent = Pt(6)
-    elif style == "shaded":
-        _para_shade(h, theme["accent"])
-        h.paragraph_format.left_indent = Pt(4)
-        h.paragraph_format.space_after = Pt(2)
     elif style == "underline":
         _para_border(h, "bottom", theme["accent"], size="8", space="2")
     r = h.add_run(text)
@@ -158,7 +170,8 @@ def _heading(doc, text, theme):
     return h
 
 
-def build_docx(title, subtitle, sections, path, doc_type=False, photo_bytes=None, theme=None):
+def build_docx(title, subtitle, sections, path, doc_type=False, photo_bytes=None,
+               theme=None, decor=None):
     if theme is None:
         theme = _next_theme()
 
@@ -169,6 +182,7 @@ def build_docx(title, subtitle, sections, path, doc_type=False, photo_bytes=None
     normal.font.size = Pt(12)
     normal.paragraph_format.line_spacing_rule = WD_LINE_SPACING.DOUBLE
 
+    _page_background(doc, theme.get("page_bg", "FFF6FA"))
     _page_border(doc, color=theme["border"])
 
     hp = doc.sections[0].header.paragraphs[0]
@@ -203,6 +217,15 @@ def build_docx(title, subtitle, sections, path, doc_type=False, photo_bytes=None
         spr.font.color.rgb = GREY
     else:
         _banner(doc, title, subtitle, theme)
+
+    if decor:
+        dp = doc.add_paragraph()
+        dp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        dp.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+        dp.paragraph_format.space_after = Pt(2)
+        dr = dp.add_run(decor)
+        dr.font.size = Pt(15)
+
     _divider(doc, color=theme["border"], size="12")
 
     for heading, body in sections:
