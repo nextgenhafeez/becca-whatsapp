@@ -254,18 +254,33 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
     return Response(content=str(MessagingResponse()), media_type="application/xml")
 
 
+def _download(url):
+    """Download a Twilio media file, with one retry (handles transient hiccups)."""
+    last = None
+    for attempt in (1, 2):
+        try:
+            r = requests.get(url, auth=(ACCOUNT_SID, AUTH_TOKEN), timeout=60)
+            r.raise_for_status()
+            return r.content
+        except Exception as e:  # noqa: BLE001
+            last = e
+            time.sleep(1)
+    log.warning("download failed after retries: %s", last)
+    return None
+
+
 def process_message(from_number, user_text, media_list):
     try:
         attachments = []
         file_notes = []
+        problems = []          # files we received but could not read
         photo_bytes = None
         for url, mtype in media_list:
-            try:
-                r = requests.get(url, auth=(ACCOUNT_SID, AUTH_TOKEN), timeout=45)
-                r.raise_for_status()
-                blob = r.content
-            except Exception:  # noqa: BLE001
+            blob = _download(url)
+            if blob is None:
+                problems.append("a file that would not download (please resend it)")
                 continue
+            log.info("attachment type=%s bytes=%d", mtype, len(blob))
             if mtype in IMAGE_TYPES:
                 attachments.append({"kind": "image", "bytes": blob, "mtype": mtype})
                 if photo_bytes is None:
@@ -276,14 +291,29 @@ def process_message(from_number, user_text, media_list):
                 file_notes.append("[a PDF file]")
             elif mtype == DOCX_TYPE:
                 text = _extract_docx(blob)
-                attachments.append({"kind": "text", "name": "Word document", "text": text})
-                file_notes.append("[a Word document]")
+                if text.strip():
+                    attachments.append({"kind": "text", "name": "Word document", "text": text})
+                    file_notes.append("[a Word document]")
+                else:
+                    log.warning("docx extracted empty (bytes=%d)", len(blob))
+                    problems.append("a Word file I could not read the text from "
+                                    "(please resend it as a PDF, or paste the text)")
             elif mtype.startswith("text/"):
                 attachments.append({"kind": "text", "name": "text file",
                                     "text": blob.decode("utf-8", "ignore")})
                 file_notes.append("[a text file]")
             elif mtype.startswith("video/"):
-                file_notes.append("[a video, which I cannot read]")
+                problems.append("a video (I cannot read videos, please send a photo or PDF)")
+            else:
+                problems.append(f"a file I cannot open ({mtype})")
+
+        # If something failed, tell Becca so she explains it clearly instead of going vague.
+        if problems:
+            attachments.append({"kind": "text", "name": "system",
+                "text": "IMPORTANT system note for you, Becca: the user sent "
+                + ", and ".join(problems) + ". You did NOT receive readable content "
+                "from it. Gently tell the user this exact problem and what to do, do "
+                "not pretend you read it."})
 
         history = _history(from_number)
         data = becca_brain.respond(history, user_text, attachments)
