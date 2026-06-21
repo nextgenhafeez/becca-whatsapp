@@ -65,19 +65,31 @@ BEHAVIOUR = (
     '  "reply": "<the short message to send her on WhatsApp>",\n'
     '  "make_document": true or false,\n'
     '  "document": {\n'
+    '    "style": "plain or pretty",\n'
     '    "title": "<short title for the document>",\n'
-    '    "title_emoji": "<one emoji that fits the topic, e.g. 🎀>",\n'
-    '    "decor": "<3 to 6 fun emojis that fit the topic, separated by spaces>",\n'
     '    "subtitle": "<short subtitle, or empty string>",\n'
+    '    "cover_lines": ["<title-page lines, see below; empty list if none>"],\n'
+    '    "student_id": "<the student id number for the footer, or empty>",\n'
+    '    "title_emoji": "<one emoji, ONLY when style is pretty>",\n'
+    '    "decor": "<a few emojis, ONLY when style is pretty>",\n'
     '    "sections": [\n'
-    '      {"emoji": "<one emoji for this section>", "heading": "<section heading>", "body": "<the written text; use \\n between paragraphs>"}\n'
+    '      {"emoji": "<one emoji ONLY when pretty>", "heading": "<section heading>", "body": "<the written text; use \\n between paragraphs>"}\n'
     "    ]\n"
     "  }\n"
     "}\n\n"
-    "Pick cute, tasteful emojis that match the topic (for example dolls 🎀👗🧸, "
-    "blocks 🧱🏗️, painting 🎨🖌️, outdoor play 🌳☀️). They make the document look "
-    "fun. Keep them light, do not overdo it. These emoji fields are optional; if "
-    "nothing fits, leave them out.\n\n"
+
+    "STYLE: default is \"plain\" — a simple white page, plain black text, no banner, "
+    "no colours, no emojis. This is what to use for anything she will hand in. Only "
+    "use \"pretty\" (colours, banner, emojis) if the user clearly asks to make it "
+    "colourful, pink, fancy, decorated, or nice looking. When style is plain, leave "
+    "title_emoji, decor, and the section emoji fields as empty strings.\n\n"
+
+    "COVER PAGE: if the user gives title-page information (course number and name, "
+    "assignment number and name, student name, student id, instructor, date), put each "
+    "piece on its own line in cover_lines, in the order they gave it. You may add an "
+    "empty string \"\" to make a blank line between groups. This appears on the FIRST "
+    "PAGE only. If they give a student id number, also put just the number in "
+    "student_id. If no cover information is given, use an empty list for cover_lines.\n\n"
     "When you are only chatting or asking a question, set \"make_document\": false and "
     "set \"document\": null.\n"
     "When you write a document, set \"make_document\": true, put the FULL written content "
@@ -133,10 +145,14 @@ def respond(history, user_text, attachments):
     data["reply"] = _despace(str(data.get("reply", "")).strip()) or "Done."
     if data.get("make_document") and isinstance(data.get("document"), dict):
         doc = data["document"]
+        doc["style"] = "pretty" if str(doc.get("style", "")).strip().lower() == "pretty" else "plain"
         doc["title"] = _despace(str(doc.get("title", "Assignment")).strip()) or "Assignment"
         doc["subtitle"] = _despace(str(doc.get("subtitle", "")).strip())
         doc["title_emoji"] = str(doc.get("title_emoji", "")).strip()
         doc["decor"] = str(doc.get("decor", "")).strip()
+        doc["student_id"] = str(doc.get("student_id", "")).strip()
+        cover = doc.get("cover_lines") or []
+        doc["cover_lines"] = [_despace(str(x)) for x in cover] if isinstance(cover, list) else []
         clean_sections = []
         for s in doc.get("sections", []) or []:
             if not isinstance(s, dict):

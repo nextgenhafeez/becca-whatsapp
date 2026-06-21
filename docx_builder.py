@@ -11,6 +11,7 @@ import random
 from docx import Document
 from docx.shared import Pt, RGBColor, Inches
 from docx.enum.text import WD_LINE_SPACING, WD_ALIGN_PARAGRAPH
+from docx.enum.section import WD_SECTION
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
@@ -19,6 +20,7 @@ STUDENT_ID = os.environ.get("STUDENT_ID", "Student ID")
 BANNER_PATH = os.path.join(os.path.dirname(__file__), "assets", "banner.png")
 
 GREY = RGBColor(0x70, 0x70, 0x70)
+BLACK = RGBColor(0x00, 0x00, 0x00)
 
 
 def _rgb(hex6):
@@ -106,17 +108,62 @@ def _page_background(doc, color):
 
 
 def _page_border(doc, color="7FD4FF"):
+    for section in doc.sections:
+        sectPr = section._sectPr
+        pgBorders = OxmlElement("w:pgBorders")
+        pgBorders.set(qn("w:offsetFrom"), "page")
+        for edge in ("top", "left", "bottom", "right"):
+            b = OxmlElement(f"w:{edge}")
+            b.set(qn("w:val"), "single")
+            b.set(qn("w:sz"), "18")
+            b.set(qn("w:space"), "24")
+            b.set(qn("w:color"), color)
+            pgBorders.append(b)
+        sectPr.append(pgBorders)
+
+
+def _footer_student_id(doc, student_id):
+    """Show 'Student id: ...' on the bottom-left of every page."""
+    fp = doc.sections[0].footer.paragraphs[0]
+    fp.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    fr = fp.add_run(f"Student id: {student_id}")
+    fr.font.name = "Times New Roman"
+    fr.font.size = Pt(9)
+    fr.font.color.rgb = GREY
+
+
+def _cover_page(doc, lines):
+    """A title page (page 1 only): the given lines centered, then a page break.
+    Uses the section's vertical-centre so it sits in the middle like a real cover."""
+    for ln in lines:
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+        p.paragraph_format.space_after = Pt(8)
+        if str(ln).strip():
+            r = p.add_run(str(ln).strip())
+            r.font.name = "Times New Roman"
+            r.font.size = Pt(12)
+            r.font.color.rgb = BLACK
+    # vertically centre this (cover) section
     sectPr = doc.sections[0]._sectPr
-    pgBorders = OxmlElement("w:pgBorders")
-    pgBorders.set(qn("w:offsetFrom"), "page")
-    for edge in ("top", "left", "bottom", "right"):
-        b = OxmlElement(f"w:{edge}")
-        b.set(qn("w:val"), "single")
-        b.set(qn("w:sz"), "18")
-        b.set(qn("w:space"), "24")
-        b.set(qn("w:color"), color)
-        pgBorders.append(b)
-    sectPr.append(pgBorders)
+    vAlign = OxmlElement("w:vAlign")
+    vAlign.set(qn("w:val"), "center")
+    sectPr.append(vAlign)
+    # start a fresh, top-aligned page for the body
+    doc.add_section(WD_SECTION.NEW_PAGE)
+
+
+def _plain_heading(doc, text):
+    h = doc.add_paragraph()
+    h.paragraph_format.space_before = Pt(10)
+    h.paragraph_format.space_after = Pt(2)
+    h.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+    r = h.add_run(text)
+    r.bold = True
+    r.font.name = "Times New Roman"
+    r.font.size = Pt(12)
+    r.font.color.rgb = BLACK
 
 
 def _banner(doc, title, subtitle, theme):
@@ -171,8 +218,16 @@ def _heading(doc, text, theme):
 
 
 def build_docx(title, subtitle, sections, path, doc_type=False, photo_bytes=None,
-               theme=None, decor=None):
-    if theme is None:
+               theme=None, decor=None, style="plain", cover_lines=None, student_id=None):
+    """Default style is 'plain': white page, no banner, plain black text, like a
+    normal hand-in. style='pretty' brings back the Becca banner, soft colour, and
+    decorations (only when the user asks for it).
+
+    cover_lines: list of strings for a title page (page 1 only).
+    student_id: shown bottom-left on every page.
+    """
+    pretty = (style == "pretty")
+    if pretty and theme is None:
         theme = _next_theme()
 
     doc = Document()
@@ -182,83 +237,93 @@ def build_docx(title, subtitle, sections, path, doc_type=False, photo_bytes=None
     normal.font.size = Pt(12)
     normal.paragraph_format.line_spacing_rule = WD_LINE_SPACING.DOUBLE
 
-    _page_background(doc, theme.get("page_bg", "FFF6FA"))
-    _page_border(doc, color=theme["border"])
+    sid = student_id or (STUDENT_ID if STUDENT_ID != "Student ID" else "")
+    if sid:
+        _footer_student_id(doc, sid)
 
-    hp = doc.sections[0].header.paragraphs[0]
-    hr = hp.add_run(f"ELCD Term 3 – {STUDENT_NAME} ({STUDENT_ID})")
-    hr.font.name = "Times New Roman"
-    hr.font.size = Pt(10)
-    hr.font.color.rgb = GREY
+    if pretty:
+        _page_background(doc, theme.get("page_bg", "FFF6FA"))
 
-    if os.path.isfile(BANNER_PATH):
-        bp = doc.add_paragraph()
-        bp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        bp.paragraph_format.space_after = Pt(4)
-        try:
-            bp.add_run().add_picture(BANNER_PATH, width=Inches(6.3))
-        except Exception:
-            _banner(doc, title, subtitle, theme)
-        tt = doc.add_paragraph()
-        tt.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        tt.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
-        ttr = tt.add_run(title)
-        ttr.bold = True
-        ttr.font.name = "Times New Roman"
-        ttr.font.size = Pt(16)
-        ttr.font.color.rgb = _rgb(theme["title"])
-        sp = doc.add_paragraph()
-        sp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        sp.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
-        spr = sp.add_run(subtitle)
-        spr.italic = True
-        spr.font.name = "Times New Roman"
-        spr.font.size = Pt(11)
-        spr.font.color.rgb = GREY
+    # Title page (first page only), then a fresh page for the body.
+    if cover_lines:
+        _cover_page(doc, [ln for ln in cover_lines])
+
+    # ---- body ----
+    if pretty:
+        if os.path.isfile(BANNER_PATH):
+            bp = doc.add_paragraph()
+            bp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            bp.paragraph_format.space_after = Pt(4)
+            try:
+                bp.add_run().add_picture(BANNER_PATH, width=Inches(6.3))
+            except Exception:
+                _banner(doc, title, subtitle, theme)
+        if title:
+            tt = doc.add_paragraph()
+            tt.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            tt.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+            ttr = tt.add_run(title)
+            ttr.bold = True
+            ttr.font.name = "Times New Roman"
+            ttr.font.size = Pt(16)
+            ttr.font.color.rgb = _rgb(theme["title"])
+        if subtitle:
+            sp = doc.add_paragraph()
+            sp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            sp.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+            spr = sp.add_run(subtitle)
+            spr.italic = True
+            spr.font.name = "Times New Roman"
+            spr.font.size = Pt(11)
+            spr.font.color.rgb = GREY
+        if decor:
+            dp = doc.add_paragraph()
+            dp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            dp.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+            dr = dp.add_run(decor)
+            dr.font.size = Pt(15)
+        _divider(doc, color=theme["border"], size="12")
     else:
-        _banner(doc, title, subtitle, theme)
-
-    if decor:
-        dp = doc.add_paragraph()
-        dp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        dp.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
-        dp.paragraph_format.space_after = Pt(2)
-        dr = dp.add_run(decor)
-        dr.font.size = Pt(15)
-
-    _divider(doc, color=theme["border"], size="12")
+        # plain: a simple black title, no banner, no colour
+        if title:
+            tt = doc.add_paragraph()
+            tt.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            tt.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+            tt.paragraph_format.space_after = Pt(6)
+            ttr = tt.add_run(title)
+            ttr.bold = True
+            ttr.font.name = "Times New Roman"
+            ttr.font.size = Pt(14)
+            ttr.font.color.rgb = BLACK
 
     for heading, body in sections:
         if heading:
-            _heading(doc, heading, theme)
+            if pretty:
+                _heading(doc, heading, theme)
+            else:
+                _plain_heading(doc, heading)
         for line in str(body).split("\n"):
             if line.strip():
                 doc.add_paragraph(line.strip())
-
-    if doc_type:
-        _divider(doc, color=theme["divider"])
-        dt = doc.add_paragraph()
-        dt.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
-        dtr = dt.add_run("Circle the documentation:  Picture  |  Artifact  |  Work sample")
-        dtr.bold = True
-        dtr.font.color.rgb = _rgb(theme["heading"])
-        doc.add_paragraph("Documentation type: Picture")
 
     if photo_bytes:
         cap = doc.add_paragraph()
         cap.paragraph_format.space_before = Pt(6)
         cap.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
-        cr = cap.add_run("Play experience photo")
+        cr = cap.add_run("Photo")
         cr.bold = True
         cr.font.name = "Times New Roman"
         cr.font.size = Pt(12)
-        cr.font.color.rgb = _rgb(theme["heading"])
+        cr.font.color.rgb = _rgb(theme["heading"]) if pretty else BLACK
         pic = doc.add_paragraph()
         pic.alignment = WD_ALIGN_PARAGRAPH.CENTER
         try:
             pic.add_run().add_picture(io.BytesIO(photo_bytes), width=Inches(4.5))
         except Exception:
             pass
+
+    if pretty:
+        _page_border(doc, color=theme["border"])
 
     doc.save(path)
     return path

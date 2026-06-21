@@ -322,13 +322,22 @@ def process_message(from_number, user_text, media_list):
         made_doc = False
         if data.get("make_document") and data.get("document"):
             doc = data["document"]
-            sections = [(f"{s.get('emoji','')} {s['heading']}".strip(), s["body"])
-                        for s in doc["sections"]]
-            title = f"{doc.get('title_emoji','')} {doc['title']}".strip()
+            pretty = doc.get("style") == "pretty"
+            if pretty:
+                sections = [(f"{s.get('emoji','')} {s['heading']}".strip(), s["body"])
+                            for s in doc["sections"]]
+                title = f"{doc.get('title_emoji','')} {doc['title']}".strip()
+            else:
+                sections = [(s["heading"], s["body"]) for s in doc["sections"]]
+                title = doc["title"]
             filename = f"BECCA_{uuid.uuid4().hex[:8]}.docx"
             path = os.path.join(FILES_DIR, filename)
-            build_docx(title, doc.get("subtitle") or SUBTITLE, sections, path,
-                       doc_type=False, photo_bytes=photo_bytes, decor=doc.get("decor"))
+            build_docx(title, doc.get("subtitle") or "", sections, path,
+                       doc_type=False, photo_bytes=photo_bytes,
+                       decor=doc.get("decor") if pretty else None,
+                       style="pretty" if pretty else "plain",
+                       cover_lines=doc.get("cover_lines") or None,
+                       student_id=doc.get("student_id") or None)
             file_url = f"{PUBLIC_BASE_URL}/files/{filename}"
             log.info("DOC built '%s' for %s -> %s", doc["title"], from_number, filename)
             ok = _send(from_number, reply, media_url=[file_url])
